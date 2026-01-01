@@ -177,11 +177,11 @@ fn test_process_filter_git_add_comparison() {
     assert_eq!(our_output.as_ref(), git_stored.as_slice());
 }
 
-/// Test that git-lfs filter works correctly with GitHub e2e.
-/// Creates a temp branch, pushes LFS content, clones and verifies, then deletes branch.
-/// Skips if git-lfs or gh CLI is not available.
+/// Test that git-lfs filter works correctly via pure git2.
+/// Tests both clean (content -> pointer) and smudge (pointer -> content).
+/// Skips if git-lfs is not installed.
 #[test]
-fn test_process_filter_lfs_github_e2e() {
+fn test_process_filter_lfs() {
     // Check if git-lfs is installed
     let lfs_check = Command::new("git-lfs").arg("version").output();
     if lfs_check.is_err() || !lfs_check.unwrap().status.success() {
@@ -189,66 +189,13 @@ fn test_process_filter_lfs_github_e2e() {
         return;
     }
 
-    // Check if gh CLI is available and authenticated
-    let gh_check = Command::new("gh").args(["auth", "status"]).output();
-    if gh_check.is_err() || !gh_check.unwrap().status.success() {
-        eprintln!("Skipping test: gh CLI not authenticated");
-        return;
-    }
+    let (td, repo) = repo_init();
+    let repo_path = td.path();
 
-    // Use this repo for testing - it already has LFS enabled
-    let test_repo = "ejc3/git2-process-filter";
-    let branch_name = format!("test-lfs-{}", std::process::id());
-
-    // Clone the repo
-    let clone_dir = tempfile::TempDir::new().unwrap();
-    let repo_path = clone_dir.path().join("repo");
-
-    let output = Command::new("gh")
-        .args(["repo", "clone", test_repo, repo_path.to_str().unwrap()])
-        .output()
-        .expect("gh repo clone failed");
-
-    if !output.status.success() {
-        eprintln!("Skipping test: could not clone repo: {}",
-                  String::from_utf8_lossy(&output.stderr));
-        return;
-    }
-
-    // Cleanup function - delete branch at end
-    struct Cleanup {
-        repo_path: std::path::PathBuf,
-        branch: String,
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            // Delete remote branch
-            let _ = Command::new("git")
-                .args(["push", "origin", "--delete", &self.branch])
-                .current_dir(&self.repo_path)
-                .output();
-        }
-    }
-    let _cleanup = Cleanup {
-        repo_path: repo_path.clone(),
-        branch: branch_name.clone(),
-    };
-
-    // Open the cloned repo
-    let repo = Repository::open(&repo_path).expect("Failed to open cloned repo");
-
-    // Create and checkout test branch
-    let output = Command::new("git")
-        .args(["checkout", "-b", &branch_name])
-        .current_dir(&repo_path)
-        .output()
-        .expect("git checkout failed");
-    assert!(output.status.success(), "git checkout failed: {:?}", output);
-
-    // Initialize LFS
+    // Initialize LFS in the repo
     let output = Command::new("git")
         .args(["lfs", "install", "--local"])
-        .current_dir(&repo_path)
+        .current_dir(repo_path)
         .output()
         .expect("git lfs install failed");
     assert!(output.status.success(), "git lfs install failed: {:?}", output);
@@ -256,76 +203,58 @@ fn test_process_filter_lfs_github_e2e() {
     // Track *.bin files with LFS
     let output = Command::new("git")
         .args(["lfs", "track", "*.bin"])
-        .current_dir(&repo_path)
+        .current_dir(repo_path)
         .output()
         .expect("git lfs track failed");
     assert!(output.status.success(), "git lfs track failed: {:?}", output);
 
-    // Create test content - must be large enough for LFS
-    let test_file = repo_path.join("test-large.bin");
+    // Create test content
+    let test_file = repo_path.join("test.bin");
     let content: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
     fs::write(&test_file, &content).unwrap();
 
     // Register our process filter for LFS
     let _reg = register_process_filter(&repo, "lfs").unwrap();
 
-    // Use git2 to add and commit files (this uses our filter!)
-    // With the workdir fix, git-lfs clean will run in the correct directory
-    // and store content in .git/lfs/objects
+    // Use git2 to add and commit files (this exercises the CLEAN filter)
     {
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new(".gitattributes")).unwrap();
-        index.add_path(std::path::Path::new("test-large.bin")).unwrap();
+        index.add_path(std::path::Path::new("test.bin")).unwrap();
         index.write().unwrap();
 
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = repo.signature().unwrap();
-        let parent = repo.head().unwrap().peel_to_commit().unwrap();
 
-        repo.commit(Some("HEAD"), &sig, &sig, "Test LFS commit via git2", &tree, &[&parent]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Add LFS file", &tree, &[]).unwrap();
     }
 
-    // Verify LFS content was stored properly
+    // Verify LFS content was stored
     let lfs_objects = repo_path.join(".git/lfs/objects");
-    assert!(lfs_objects.exists(), "LFS objects directory should exist after git2 add");
+    assert!(lfs_objects.exists(), "LFS objects directory should exist");
 
-    // Push branch to GitHub
-    let output = Command::new("git")
-        .args(["push", "-u", "origin", &branch_name])
-        .current_dir(&repo_path)
-        .output()
-        .expect("git push failed");
-    assert!(output.status.success(), "git push failed: {:?}\n{}",
-            output, String::from_utf8_lossy(&output.stderr));
+    // Read the blob from ODB - should be an LFS pointer
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = head.tree().unwrap();
+    let entry = tree.get_name("test.bin").unwrap();
+    let blob = repo.find_blob(entry.id()).unwrap();
+    let pointer = blob.content();
 
-    // Clone to a new location to verify LFS works
-    let verify_dir = tempfile::TempDir::new().unwrap();
-    let verify_path = verify_dir.path().join("verify");
+    let pointer_str = String::from_utf8_lossy(pointer);
+    assert!(pointer_str.starts_with("version https://git-lfs.github.com/spec/v1"),
+            "Clean filter should produce LFS pointer, got: {}", pointer_str);
+    assert!(pointer_str.contains("oid sha256:"), "Pointer should have oid");
+    assert!(pointer_str.contains("size 2048"), "Pointer should have correct size");
 
-    let output = Command::new("git")
-        .args(["clone", "--branch", &branch_name,
-               &format!("https://github.com/{}.git", test_repo),
-               verify_path.to_str().unwrap()])
-        .output()
-        .expect("git clone failed");
-    assert!(output.status.success(), "git clone failed: {:?}\n{}",
-            output, String::from_utf8_lossy(&output.stderr));
+    // Now test SMUDGE filter - convert pointer back to content
+    let filter_list = FilterList::load(&repo, "test.bin", FilterMode::ToWorktree, FilterFlags::DEFAULT)
+        .unwrap()
+        .expect("Should have filter list for smudge");
 
-    // Verify the file content matches (LFS should have downloaded it)
-    let cloned_content = fs::read(verify_path.join("test-large.bin")).unwrap();
-    assert_eq!(cloned_content, content, "LFS content mismatch after clone");
-
-    // Verify it was stored as LFS (check git lfs ls-files)
-    let output = Command::new("git")
-        .args(["lfs", "ls-files"])
-        .current_dir(&verify_path)
-        .output()
-        .expect("git lfs ls-files failed");
-    let lfs_files = String::from_utf8_lossy(&output.stdout);
-    assert!(lfs_files.contains("test-large.bin"), "File not tracked by LFS: {}", lfs_files);
-
-    eprintln!("LFS e2e test passed! Content verified after push/clone cycle.");
+    let smudged = filter_list.apply_to_buffer(pointer).unwrap();
+    assert_eq!(smudged.as_ref(), content.as_slice(),
+               "Smudge filter should restore original content");
 }
 
 /// Test filter with empty commands (passthrough)

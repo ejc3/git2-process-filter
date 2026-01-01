@@ -24,18 +24,25 @@ fn repo_init() -> (TempDir, Repository) {
 fn test_process_filter_matches_git_cli() {
     let (td, repo) = repo_init();
 
+    // Use unique filter name to avoid conflicts with parallel tests
+    let filter_name = format!("upper_{}", std::process::id());
+
     // Configure a simple filter that uppercases on clean
     {
         let mut config = repo.config().unwrap();
-        config.set_str("filter.upper.clean", "tr a-z A-Z").unwrap();
-        config.set_str("filter.upper.smudge", "tr A-Z a-z").unwrap();
+        config
+            .set_str(&format!("filter.{}.clean", filter_name), "tr a-z A-Z")
+            .unwrap();
+        config
+            .set_str(&format!("filter.{}.smudge", filter_name), "tr A-Z a-z")
+            .unwrap();
     }
 
     // Create .gitattributes
     let gitattributes_path = td.path().join(".gitattributes");
     {
         let mut file = File::create(&gitattributes_path).unwrap();
-        writeln!(file, "*.txt filter=upper").unwrap();
+        writeln!(file, "*.txt filter={}", filter_name).unwrap();
     }
 
     // Create test file
@@ -44,7 +51,7 @@ fn test_process_filter_matches_git_cli() {
     fs::write(&test_file, original_content).unwrap();
 
     // Register our process filter
-    let _reg = register_process_filter(&repo, "upper").unwrap();
+    let _reg = register_process_filter(&repo, &filter_name).unwrap();
 
     // Use git2's FilterList to apply the filter (which uses our registered filter)
     let filter_list = FilterList::load(&repo, "test.txt", FilterMode::ToOdb, FilterFlags::DEFAULT)
@@ -112,18 +119,25 @@ fn test_process_filter_with_path_placeholder() {
 fn test_process_filter_git_add_comparison() {
     let (td, repo) = repo_init();
 
+    // Use unique filter name to avoid conflicts with parallel tests
+    let filter_name = format!("upperadd_{}", std::process::id());
+
     // Configure uppercase filter
     {
         let mut config = repo.config().unwrap();
-        config.set_str("filter.upper.clean", "tr a-z A-Z").unwrap();
-        config.set_str("filter.upper.smudge", "tr A-Z a-z").unwrap();
+        config
+            .set_str(&format!("filter.{}.clean", filter_name), "tr a-z A-Z")
+            .unwrap();
+        config
+            .set_str(&format!("filter.{}.smudge", filter_name), "tr A-Z a-z")
+            .unwrap();
     }
 
     // Create .gitattributes
     let gitattributes_path = td.path().join(".gitattributes");
     {
         let mut file = File::create(&gitattributes_path).unwrap();
-        writeln!(file, "*.txt filter=upper").unwrap();
+        writeln!(file, "*.txt filter={}", filter_name).unwrap();
     }
 
     // Stage .gitattributes first
@@ -161,7 +175,7 @@ fn test_process_filter_git_add_comparison() {
     assert_eq!(git_stored, b"HELLO WORLD\n");
 
     // Now verify our filter produces the same result
-    let _reg = register_process_filter(&repo, "upper").unwrap();
+    let _reg = register_process_filter(&repo, &filter_name).unwrap();
 
     let filter_list = FilterList::load(&repo, "hello.txt", FilterMode::ToOdb, FilterFlags::DEFAULT)
         .unwrap()

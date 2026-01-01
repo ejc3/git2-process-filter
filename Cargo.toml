@@ -1,0 +1,15 @@
+[package]
+name = "git2-process-filter"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "External process filter support for git2"
+repository = "https://github.com/ejc3/git2-process-filter"
+keywords = ["git", "filter", "lfs"]
+categories = ["development-tools"]
+
+[dependencies]
+git2 = { git = "https://github.com/ejc3/git2-rs.git", branch = "master" }
+
+[dev-dependencies]
+tempfile = "3"

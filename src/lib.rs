@@ -21,7 +21,9 @@
 //! # Ok::<(), git2::Error>(())
 //! ```
 
-use git2::{filter_priority, filter_register, Error, Filter, FilterMode, FilterRegistration, FilterSource};
+use git2::{
+    filter_priority, filter_register, Error, Filter, FilterMode, FilterRegistration, FilterSource,
+};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -45,7 +47,12 @@ impl ProcessFilter {
         (program, args)
     }
 
-    fn run_command(cmd: &str, path: &str, workdir: Option<&Path>, input: &[u8]) -> Result<Vec<u8>, Error> {
+    fn run_command(
+        cmd: &str,
+        path: &str,
+        workdir: Option<&Path>,
+        input: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         if cmd.is_empty() {
             return Ok(input.to_vec());
         }
@@ -101,8 +108,12 @@ impl Filter for ProcessFilter {
         let path = src.path().unwrap_or("");
         let workdir = src.workdir();
         match src.mode() {
-            FilterMode::ToOdb => Self::run_command(&self.clean_cmd, path, workdir.as_deref(), input),
-            FilterMode::ToWorktree => Self::run_command(&self.smudge_cmd, path, workdir.as_deref(), input),
+            FilterMode::ToOdb => {
+                Self::run_command(&self.clean_cmd, path, workdir.as_deref(), input)
+            }
+            FilterMode::ToWorktree => {
+                Self::run_command(&self.smudge_cmd, path, workdir.as_deref(), input)
+            }
         }
     }
 }
@@ -191,12 +202,8 @@ mod tests {
         // Set up filter config
         {
             let mut config = repo.config().unwrap();
-            config
-                .set_str("filter.myfilter.clean", "cat")
-                .unwrap();
-            config
-                .set_str("filter.myfilter.smudge", "cat")
-                .unwrap();
+            config.set_str("filter.myfilter.clean", "cat").unwrap();
+            config.set_str("filter.myfilter.smudge", "cat").unwrap();
         }
 
         let result = register_process_filter(&repo, "myfilter");

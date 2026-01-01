@@ -269,53 +269,26 @@ fn test_process_filter_lfs_github_e2e() {
     // Register our process filter for LFS
     let _reg = register_process_filter(&repo, "lfs").unwrap();
 
-    // Add .gitattributes first
-    let output = Command::new("git")
-        .args(["add", ".gitattributes"])
-        .current_dir(&repo_path)
-        .output()
-        .expect("git add .gitattributes failed");
-    assert!(output.status.success(), "git add .gitattributes failed: {:?}", output);
-
-    // Now use git2 to add the LFS file (this uses our filter!)
-    // But first verify our filter produces correct pointer
+    // Use git2 to add and commit files (this uses our filter!)
+    // With the workdir fix, git-lfs clean will run in the correct directory
+    // and store content in .git/lfs/objects
     {
-        use git2::{FilterFlags, FilterList, FilterMode};
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(".gitattributes")).unwrap();
+        index.add_path(std::path::Path::new("test-large.bin")).unwrap();
+        index.write().unwrap();
 
-        let filter_list = FilterList::load(&repo, "test-large.bin", FilterMode::ToOdb, FilterFlags::DEFAULT)
-            .unwrap()
-            .expect("Should have filter list for .bin file");
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
 
-        let cleaned = filter_list.apply_to_buffer(&content).unwrap();
-        let cleaned_str = String::from_utf8_lossy(cleaned.as_ref());
-
-        // Verify our filter produces valid LFS pointer
-        assert!(
-            cleaned_str.starts_with("version https://git-lfs.github.com/spec/v1"),
-            "Expected LFS pointer, got: {}",
-            cleaned_str
-        );
-
-        // git-lfs clean also stores content in .git/lfs/objects, so we can use git add
+        repo.commit(Some("HEAD"), &sig, &sig, "Test LFS commit via git2", &tree, &[&parent]).unwrap();
     }
 
-    // Use git add to add the file (ensures LFS stores content properly)
-    let output = Command::new("git")
-        .args(["add", "test-large.bin"])
-        .current_dir(&repo_path)
-        .output()
-        .expect("git add failed");
-    assert!(output.status.success(), "git add test-large.bin failed: {:?}\n{}",
-            output, String::from_utf8_lossy(&output.stderr));
-
-    // Commit via git CLI
-    let output = Command::new("git")
-        .args(["commit", "-m", "Test LFS commit"])
-        .current_dir(&repo_path)
-        .output()
-        .expect("git commit failed");
-    assert!(output.status.success(), "git commit failed: {:?}\n{}",
-            output, String::from_utf8_lossy(&output.stderr));
+    // Verify LFS content was stored properly
+    let lfs_objects = repo_path.join(".git/lfs/objects");
+    assert!(lfs_objects.exists(), "LFS objects directory should exist after git2 add");
 
     // Push branch to GitHub
     let output = Command::new("git")

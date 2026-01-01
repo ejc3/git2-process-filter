@@ -23,6 +23,7 @@
 
 use git2::{filter_priority, filter_register, Error, Filter, FilterMode, FilterRegistration, FilterSource};
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// A filter that shells out to external commands configured in git config.
@@ -44,7 +45,7 @@ impl ProcessFilter {
         (program, args)
     }
 
-    fn run_command(cmd: &str, path: &str, input: &[u8]) -> Result<Vec<u8>, Error> {
+    fn run_command(cmd: &str, path: &str, workdir: Option<&Path>, input: &[u8]) -> Result<Vec<u8>, Error> {
         if cmd.is_empty() {
             return Ok(input.to_vec());
         }
@@ -54,11 +55,19 @@ impl ProcessFilter {
             return Ok(input.to_vec());
         }
 
-        let mut child = Command::new(&program)
+        let mut command = Command::new(&program);
+        command
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Set working directory so external tools like git-lfs can find .git
+        if let Some(dir) = workdir {
+            command.current_dir(dir);
+        }
+
+        let mut child = command
             .spawn()
             .map_err(|e| Error::from_str(&format!("failed to spawn '{}': {}", program, e)))?;
 
@@ -90,9 +99,10 @@ impl ProcessFilter {
 impl Filter for ProcessFilter {
     fn apply(&self, src: &FilterSource<'_>, input: &[u8]) -> Result<Vec<u8>, Error> {
         let path = src.path().unwrap_or("");
+        let workdir = src.workdir();
         match src.mode() {
-            FilterMode::ToOdb => Self::run_command(&self.clean_cmd, path, input),
-            FilterMode::ToWorktree => Self::run_command(&self.smudge_cmd, path, input),
+            FilterMode::ToOdb => Self::run_command(&self.clean_cmd, path, workdir.as_deref(), input),
+            FilterMode::ToWorktree => Self::run_command(&self.smudge_cmd, path, workdir.as_deref(), input),
         }
     }
 }
@@ -210,7 +220,7 @@ mod tests {
     #[test]
     fn test_run_command_cat() {
         let input = b"hello world";
-        let result = ProcessFilter::run_command("cat", "", input);
+        let result = ProcessFilter::run_command("cat", "", None, input);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), input);
     }
@@ -218,7 +228,7 @@ mod tests {
     #[test]
     fn test_run_command_empty() {
         let input = b"hello world";
-        let result = ProcessFilter::run_command("", "", input);
+        let result = ProcessFilter::run_command("", "", None, input);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), input);
     }

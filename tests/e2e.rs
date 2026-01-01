@@ -24,14 +24,17 @@ fn repo_init() -> (TempDir, Repository) {
 fn test_process_filter_matches_git_cli() {
     let (td, repo) = repo_init();
 
+    // Use unique filter name to avoid conflicts with parallel tests
+    let filter_name = format!("upper_{}", std::process::id());
+
     // Configure a simple filter that uppercases on clean
     {
         let mut config = repo.config().unwrap();
         config
-            .set_str("filter.upper.clean", "tr a-z A-Z")
+            .set_str(&format!("filter.{}.clean", filter_name), "tr a-z A-Z")
             .unwrap();
         config
-            .set_str("filter.upper.smudge", "tr A-Z a-z")
+            .set_str(&format!("filter.{}.smudge", filter_name), "tr A-Z a-z")
             .unwrap();
     }
 
@@ -39,7 +42,7 @@ fn test_process_filter_matches_git_cli() {
     let gitattributes_path = td.path().join(".gitattributes");
     {
         let mut file = File::create(&gitattributes_path).unwrap();
-        writeln!(file, "*.txt filter=upper").unwrap();
+        writeln!(file, "*.txt filter={}", filter_name).unwrap();
     }
 
     // Create test file
@@ -48,7 +51,7 @@ fn test_process_filter_matches_git_cli() {
     fs::write(&test_file, original_content).unwrap();
 
     // Register our process filter
-    let _reg = register_process_filter(&repo, "upper").unwrap();
+    let _reg = register_process_filter(&repo, &filter_name).unwrap();
 
     // Use git2's FilterList to apply the filter (which uses our registered filter)
     let filter_list = FilterList::load(&repo, "test.txt", FilterMode::ToOdb, FilterFlags::DEFAULT)
@@ -62,10 +65,14 @@ fn test_process_filter_matches_git_cli() {
     assert_eq!(our_output, b"HELLO WORLD\n");
 
     // Now test smudge (ToWorktree)
-    let filter_list =
-        FilterList::load(&repo, "test.txt", FilterMode::ToWorktree, FilterFlags::DEFAULT)
-            .unwrap()
-            .expect("Should have filter list");
+    let filter_list = FilterList::load(
+        &repo,
+        "test.txt",
+        FilterMode::ToWorktree,
+        FilterFlags::DEFAULT,
+    )
+    .unwrap()
+    .expect("Should have filter list");
 
     let smudged = filter_list.apply_to_buffer(b"HELLO WORLD\n").unwrap();
     assert_eq!(smudged.as_ref(), b"hello world\n");
@@ -112,14 +119,17 @@ fn test_process_filter_with_path_placeholder() {
 fn test_process_filter_git_add_comparison() {
     let (td, repo) = repo_init();
 
+    // Use unique filter name to avoid conflicts with parallel tests
+    let filter_name = format!("upperadd_{}", std::process::id());
+
     // Configure uppercase filter
     {
         let mut config = repo.config().unwrap();
         config
-            .set_str("filter.upper.clean", "tr a-z A-Z")
+            .set_str(&format!("filter.{}.clean", filter_name), "tr a-z A-Z")
             .unwrap();
         config
-            .set_str("filter.upper.smudge", "tr A-Z a-z")
+            .set_str(&format!("filter.{}.smudge", filter_name), "tr A-Z a-z")
             .unwrap();
     }
 
@@ -127,7 +137,7 @@ fn test_process_filter_git_add_comparison() {
     let gitattributes_path = td.path().join(".gitattributes");
     {
         let mut file = File::create(&gitattributes_path).unwrap();
-        writeln!(file, "*.txt filter=upper").unwrap();
+        writeln!(file, "*.txt filter={}", filter_name).unwrap();
     }
 
     // Stage .gitattributes first
@@ -165,92 +175,108 @@ fn test_process_filter_git_add_comparison() {
     assert_eq!(git_stored, b"HELLO WORLD\n");
 
     // Now verify our filter produces the same result
-    let _reg = register_process_filter(&repo, "upper").unwrap();
+    let _reg = register_process_filter(&repo, &filter_name).unwrap();
 
-    let filter_list =
-        FilterList::load(&repo, "hello.txt", FilterMode::ToOdb, FilterFlags::DEFAULT)
-            .unwrap()
-            .expect("Should have filter list");
+    let filter_list = FilterList::load(&repo, "hello.txt", FilterMode::ToOdb, FilterFlags::DEFAULT)
+        .unwrap()
+        .expect("Should have filter list");
 
     let our_output = filter_list.apply_to_buffer(b"hello world\n").unwrap();
 
     assert_eq!(our_output.as_ref(), git_stored.as_slice());
 }
 
-/// Test that git-lfs filter works correctly.
+/// Test that git-lfs filter works correctly via pure git2.
+/// Tests both clean (content -> pointer) and smudge (pointer -> content).
 /// Skips if git-lfs is not installed.
 #[test]
 fn test_process_filter_lfs() {
     // Check if git-lfs is installed
     let lfs_check = Command::new("git-lfs").arg("version").output();
     if lfs_check.is_err() || !lfs_check.unwrap().status.success() {
-        eprintln!("Skipping test_process_filter_lfs: git-lfs not installed");
+        eprintln!("Skipping test: git-lfs not installed");
         return;
     }
 
     let (td, repo) = repo_init();
+    let repo_path = td.path();
 
     // Initialize LFS in the repo
     let output = Command::new("git")
         .args(["lfs", "install", "--local"])
-        .current_dir(td.path())
+        .current_dir(repo_path)
         .output()
         .expect("git lfs install failed");
-    assert!(output.status.success(), "git lfs install failed: {:?}", output);
+    assert!(
+        output.status.success(),
+        "git lfs install failed: {:?}",
+        output
+    );
 
     // Track *.bin files with LFS
     let output = Command::new("git")
         .args(["lfs", "track", "*.bin"])
-        .current_dir(td.path())
+        .current_dir(repo_path)
         .output()
         .expect("git lfs track failed");
-    assert!(output.status.success(), "git lfs track failed: {:?}", output);
+    assert!(
+        output.status.success(),
+        "git lfs track failed: {:?}",
+        output
+    );
 
-    // Stage .gitattributes
+    // Create test content
+    let test_file = repo_path.join("test.bin");
+    let content: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+    fs::write(&test_file, &content).unwrap();
+
+    // Register our process filter for LFS
+    let _reg = register_process_filter(&repo, "lfs").unwrap();
+
+    // Use git2 to add and commit files (this exercises the CLEAN filter)
     {
         let mut index = repo.index().unwrap();
         index
             .add_path(std::path::Path::new(".gitattributes"))
             .unwrap();
+        index.add_path(std::path::Path::new("test.bin")).unwrap();
         index.write().unwrap();
+
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+
+        repo.commit(Some("HEAD"), &sig, &sig, "Add LFS file", &tree, &[])
+            .unwrap();
     }
 
-    // Create a test binary file
-    let test_file = td.path().join("test.bin");
-    let content = b"This is test content for LFS\n";
-    fs::write(&test_file, content).unwrap();
+    // Verify LFS content was stored
+    let lfs_objects = repo_path.join(".git/lfs/objects");
+    assert!(lfs_objects.exists(), "LFS objects directory should exist");
 
-    // Register our process filter for LFS
-    let _reg = register_process_filter(&repo, "lfs").unwrap();
+    // Read the blob from ODB - should be an LFS pointer
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = head.tree().unwrap();
+    let entry = tree.get_name("test.bin").unwrap();
+    let blob = repo.find_blob(entry.id()).unwrap();
+    let pointer = blob.content();
 
-    // Apply the clean filter (ToOdb) using git2
-    let filter_list = FilterList::load(&repo, "test.bin", FilterMode::ToOdb, FilterFlags::DEFAULT)
-        .unwrap()
-        .expect("Should have filter list for .bin file");
-
-    let cleaned = filter_list.apply_to_buffer(content).unwrap();
-    let cleaned_str = String::from_utf8_lossy(cleaned.as_ref());
-
-    // LFS clean should produce a pointer file
+    let pointer_str = String::from_utf8_lossy(pointer);
     assert!(
-        cleaned_str.starts_with("version https://git-lfs.github.com/spec/v1"),
-        "Expected LFS pointer, got: {}",
-        cleaned_str
+        pointer_str.starts_with("version https://git-lfs.github.com/spec/v1"),
+        "Clean filter should produce LFS pointer, got: {}",
+        pointer_str
     );
     assert!(
-        cleaned_str.contains("oid sha256:"),
-        "Expected sha256 oid in pointer"
+        pointer_str.contains("oid sha256:"),
+        "Pointer should have oid"
     );
     assert!(
-        cleaned_str.contains("size "),
-        "Expected size in pointer, got: {}",
-        cleaned_str
+        pointer_str.contains("size 2048"),
+        "Pointer should have correct size"
     );
 
-    // Now verify smudge works - apply smudge to the pointer
-    // Note: This will fail to download since there's no LFS server,
-    // but we can at least verify the filter is invoked correctly
-    // by checking that non-pointer content passes through
+    // Now test SMUDGE filter - convert pointer back to content
     let filter_list = FilterList::load(
         &repo,
         "test.bin",
@@ -258,12 +284,14 @@ fn test_process_filter_lfs() {
         FilterFlags::DEFAULT,
     )
     .unwrap()
-    .expect("Should have filter list");
+    .expect("Should have filter list for smudge");
 
-    // Smudge non-pointer content should pass through
-    let non_pointer = b"not a pointer";
-    let smudged = filter_list.apply_to_buffer(non_pointer).unwrap();
-    assert_eq!(smudged.as_ref(), non_pointer);
+    let smudged = filter_list.apply_to_buffer(pointer).unwrap();
+    assert_eq!(
+        smudged.as_ref(),
+        content.as_slice(),
+        "Smudge filter should restore original content"
+    );
 }
 
 /// Test filter with empty commands (passthrough)

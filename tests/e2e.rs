@@ -177,6 +177,95 @@ fn test_process_filter_git_add_comparison() {
     assert_eq!(our_output.as_ref(), git_stored.as_slice());
 }
 
+/// Test that git-lfs filter works correctly.
+/// Skips if git-lfs is not installed.
+#[test]
+fn test_process_filter_lfs() {
+    // Check if git-lfs is installed
+    let lfs_check = Command::new("git-lfs").arg("version").output();
+    if lfs_check.is_err() || !lfs_check.unwrap().status.success() {
+        eprintln!("Skipping test_process_filter_lfs: git-lfs not installed");
+        return;
+    }
+
+    let (td, repo) = repo_init();
+
+    // Initialize LFS in the repo
+    let output = Command::new("git")
+        .args(["lfs", "install", "--local"])
+        .current_dir(td.path())
+        .output()
+        .expect("git lfs install failed");
+    assert!(output.status.success(), "git lfs install failed: {:?}", output);
+
+    // Track *.bin files with LFS
+    let output = Command::new("git")
+        .args(["lfs", "track", "*.bin"])
+        .current_dir(td.path())
+        .output()
+        .expect("git lfs track failed");
+    assert!(output.status.success(), "git lfs track failed: {:?}", output);
+
+    // Stage .gitattributes
+    {
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new(".gitattributes"))
+            .unwrap();
+        index.write().unwrap();
+    }
+
+    // Create a test binary file
+    let test_file = td.path().join("test.bin");
+    let content = b"This is test content for LFS\n";
+    fs::write(&test_file, content).unwrap();
+
+    // Register our process filter for LFS
+    let _reg = register_process_filter(&repo, "lfs").unwrap();
+
+    // Apply the clean filter (ToOdb) using git2
+    let filter_list = FilterList::load(&repo, "test.bin", FilterMode::ToOdb, FilterFlags::DEFAULT)
+        .unwrap()
+        .expect("Should have filter list for .bin file");
+
+    let cleaned = filter_list.apply_to_buffer(content).unwrap();
+    let cleaned_str = String::from_utf8_lossy(cleaned.as_ref());
+
+    // LFS clean should produce a pointer file
+    assert!(
+        cleaned_str.starts_with("version https://git-lfs.github.com/spec/v1"),
+        "Expected LFS pointer, got: {}",
+        cleaned_str
+    );
+    assert!(
+        cleaned_str.contains("oid sha256:"),
+        "Expected sha256 oid in pointer"
+    );
+    assert!(
+        cleaned_str.contains("size "),
+        "Expected size in pointer, got: {}",
+        cleaned_str
+    );
+
+    // Now verify smudge works - apply smudge to the pointer
+    // Note: This will fail to download since there's no LFS server,
+    // but we can at least verify the filter is invoked correctly
+    // by checking that non-pointer content passes through
+    let filter_list = FilterList::load(
+        &repo,
+        "test.bin",
+        FilterMode::ToWorktree,
+        FilterFlags::DEFAULT,
+    )
+    .unwrap()
+    .expect("Should have filter list");
+
+    // Smudge non-pointer content should pass through
+    let non_pointer = b"not a pointer";
+    let smudged = filter_list.apply_to_buffer(non_pointer).unwrap();
+    assert_eq!(smudged.as_ref(), non_pointer);
+}
+
 /// Test filter with empty commands (passthrough)
 #[test]
 fn test_process_filter_empty_commands() {

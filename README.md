@@ -41,7 +41,7 @@ Located in `src/lib.rs`:
 | `test_run_command_cat` | External process execution works |
 | `test_run_command_empty` | Empty commands pass through |
 
-### E2E Tests (4 tests)
+### E2E Tests (5 tests)
 
 Located in `tests/e2e.rs`, these compare our output with git CLI:
 
@@ -50,6 +50,7 @@ Located in `tests/e2e.rs`, these compare our output with git CLI:
 | `test_process_filter_matches_git_cli` | Verify uppercase filter produces same output as expected |
 | `test_process_filter_with_path_placeholder` | Verify `%f` path handling |
 | `test_process_filter_git_add_comparison` | Compare with actual `git add` output |
+| `test_process_filter_lfs` | Verify git-lfs produces valid pointer (skips if not installed) |
 | `test_process_filter_empty_commands` | Verify passthrough behavior |
 
 ### Running Tests
